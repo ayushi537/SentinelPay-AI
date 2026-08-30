@@ -1,7 +1,9 @@
-from agent.tools import predict_fraud
 from pydantic import BaseModel
 import ollama
 
+# ============================================================
+# TRANSACTION MODEL
+# ============================================================
 
 class Transaction(BaseModel):
     hour_of_day: int
@@ -24,45 +26,89 @@ class Transaction(BaseModel):
     credit_limit: float
 
 
-def fraud_check(transaction: Transaction):
+# ============================================================
+# AI FRAUD CHECK
+# ============================================================
 
-    # ML model prediction
-    prediction = predict_fraud(transaction.model_dump())
+def fraud_check(
+    transaction: Transaction,
+    ml_result: dict
+):
+    """
+    Explain the ML result using Ollama.
 
-    # Convert probability to percentage
-    probability = prediction["fraud_probability"] * 100
-    risk = prediction["risk"]
+    IMPORTANT:
+    This function DOES NOT run the ML model again.
+    The ML result comes directly from app.py.
+    """
 
-    # Prompt for Llama
+    # ========================================================
+    # GET EXISTING ML RESULT FROM APP.PY
+    # ========================================================
+
+    prediction = int(ml_result["prediction"])
+    probability = float(ml_result["probability"])
+    risk = str(ml_result["risk"])
+
+    # Convert decimal probability to percentage
+    probability_percent = probability * 100
+
+    # Pydantic v1 & v2 cross-compatibility for dictionary extraction
+    txn_dict = (
+        transaction.model_dump() 
+        if hasattr(transaction, "model_dump") 
+        else transaction.dict()
+    )
+
+    # ========================================================
+    # AI PROMPT
+    # ========================================================
+
     prompt = f"""
 You are an AI fraud risk analyst for a payment company.
 
-Analyze the transaction using ONLY the information provided below.
+The machine learning model has ALREADY evaluated this transaction.
 
-IMPORTANT RULES:
-- The ML model result is authoritative.
-- Do NOT calculate or change the fraud probability.
-- Do NOT invent averages, statistics, customer history, or other information.
-- Use only the transaction values provided.
-- Give exactly 3 factual reasons.
-- Keep the reasons concise.
-- The recommended action must match the risk level.
+Your ONLY job is to explain the existing ML result.
 
-Transaction:
-{transaction.model_dump()}
+============================================================
+IMPORTANT RULES
+============================================================
 
-ML Model Result:
-{prediction}
+1. The ML result is AUTHORITATIVE.
+2. DO NOT perform another ML prediction.
+3. DO NOT calculate a new fraud probability.
+4. DO NOT change the fraud probability.
+5. DO NOT change the risk level.
+6. The exact ML probability is:
+   {probability_percent:.6f}%
+7. The exact ML risk level is:
+   {risk}
+8. You MUST use these exact values in your response.
+9. Give exactly 3 factual reasons.
+10. Use ONLY the transaction information provided.
+11. Do NOT invent customer history, statistics, averages, previous transactions, or other information.
+12. Recommended action MUST match the ML risk level.
 
-Fraud probability to display:
-{probability:.6f}%
+============================================================
+TRANSACTION
+============================================================
 
-Risk level to display:
-{risk}
+{txn_dict}
 
-Return exactly this format:
+============================================================
+ML MODEL RESULT
+============================================================
 
-Fraud Probability: {probability:.6f}%
+Prediction: {prediction}
+Fraud Probability: {probability_percent:.6f}%
+Risk Level: {risk}
+
+============================================================
+REQUIRED RESPONSE FORMAT
+============================================================
+
+Fraud Probability: {probability_percent:.6f}%
 Risk Level: {risk}
 
 Reasons:
@@ -74,7 +120,10 @@ Recommended Action:
 <recommended action>
 """
 
-    # Ask Llama
+    # ========================================================
+    # OLLAMA INFERENCE
+    # ========================================================
+
     response = ollama.chat(
         model="llama3.2",
         messages=[
@@ -85,7 +134,21 @@ Recommended Action:
         ]
     )
 
+    # Extract text cleanly from dictionary or object response
+    if isinstance(response, dict):
+        ai_content = response["message"]["content"]
+    else:
+        ai_content = response.message.content
+
+    # ========================================================
+    # RETURN
+    # ========================================================
+
     return {
-        "ml_prediction": prediction,
-        "ai_analysis": response.message.content
+        "ml_prediction": {
+            "prediction": prediction,
+            "fraud_probability": probability,
+            "risk": risk
+        },
+        "ai_analysis": ai_content
     }
